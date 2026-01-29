@@ -1,5 +1,133 @@
 // lib/mock-service.ts
-import { DrugCandidate, PredictionResponse } from './types';
+import {
+  DrugCandidate,
+  PredictionResponse,
+  PAEData,
+  PLDDTData,
+  AlphaFoldQualityData,
+  ChainInfo
+} from './types';
+
+// ============================================
+// 预生成的质量数据配置
+// ============================================
+
+// 预生成的质量数据文件路径映射
+const QUALITY_DATA_URLS: Record<string, { plddt: string; pae: string; full: string }> = {
+  '6gfs': {
+    plddt: '/mock_data/6gfs_plddt.json',
+    pae: '/mock_data/6gfs_pae.json',
+    full: '/mock_data/6gfs_quality_data.json',
+  },
+  // 可以添加更多 PDB 的预生成数据
+  // '1iep': { ... },
+};
+
+/**
+ * 从预生成的 JSON 文件加载 pLDDT 数据
+ */
+async function loadPLDDTFromFile(url: string): Promise<PLDDTData | null> {
+  try {
+    console.log(`[Quality Data] Loading pLDDT: ${url}`);
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.warn(`[Quality Data] pLDDT load failed: ${response.status}`);
+      return null;
+    }
+    const data = await response.json();
+    return data as PLDDTData;
+  } catch (error) {
+    console.error('[Quality Data] pLDDT load error:', error);
+    return null;
+  }
+}
+
+/**
+ * 从预生成的 JSON 文件加载 PAE 数据
+ */
+async function loadPAEFromFile(url: string): Promise<PAEData | null> {
+  try {
+    console.log(`[Quality Data] Loading PAE: ${url}`);
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.warn(`[Quality Data] PAE load failed: ${response.status}`);
+      return null;
+    }
+    const data = await response.json();
+    return data as PAEData;
+  } catch (error) {
+    console.error('[Quality Data] PAE load error:', error);
+    return null;
+  }
+}
+
+/**
+ * 构建简单的链信息 (用于 fallback)
+ */
+function buildSimpleChainInfo(numResidues: number, chainBoundaries: number[]): ChainInfo[] {
+  const chains: ChainInfo[] = [];
+  let prevBoundary = 0;
+
+  for (let i = 0; i <= chainBoundaries.length; i++) {
+    const endIndex = chainBoundaries[i] ?? numResidues;
+    const chainId = String.fromCharCode(65 + i);
+
+    chains.push({
+      chainId,
+      startIndex: prevBoundary,
+      endIndex,
+      residueCount: endIndex - prevBoundary,
+      type: 'protein',
+    });
+
+    prevBoundary = endIndex;
+  }
+
+  return chains;
+}
+
+/**
+ * 获取质量数据 (pLDDT + PAE)
+ * 优先从预生成的 JSON 文件加载，失败则回退到动态生成的 mock 数据
+ */
+async function fetchAlphaFoldQualityData(
+  pdbId: string,
+  fallbackNumResidues: number,
+  fallbackChainBoundaries: number[]
+): Promise<{ plddt: PLDDTData; pae: PAEData; fromAPI: boolean }> {
+  const qualityDataUrls = QUALITY_DATA_URLS[pdbId.toLowerCase()];
+  const fallbackChains = buildSimpleChainInfo(fallbackNumResidues, fallbackChainBoundaries);
+
+  if (qualityDataUrls) {
+    console.log(`[Quality Data] Loading pre-generated data for ${pdbId}`);
+
+    // 并行加载 pLDDT 和 PAE
+    const [plddtData, paeData] = await Promise.all([
+      loadPLDDTFromFile(qualityDataUrls.plddt),
+      loadPAEFromFile(qualityDataUrls.pae),
+    ]);
+
+    if (plddtData && paeData) {
+      console.log(`[Quality Data] Successfully loaded: ${plddtData.scores.length} residues`);
+      return {
+        plddt: plddtData,
+        pae: paeData,
+        fromAPI: true, // 标记为"真实"数据（预生成的）
+      };
+    }
+
+    console.warn(`[Quality Data] Failed to load pre-generated data, falling back to mock`);
+  } else {
+    console.log(`[Quality Data] No pre-generated data for ${pdbId}, using mock`);
+  }
+
+  // Fallback: 动态生成 mock 数据
+  return {
+    plddt: generateMockPLDDT(fallbackNumResidues, fallbackChains),
+    pae: generateMockPAE(fallbackNumResidues, fallbackChainBoundaries),
+    fromAPI: false,
+  };
+}
 
 // --- Mock 药物名称 ---
 const DRUG_NAMES = [
@@ -180,12 +308,62 @@ export const fetchDrugPrediction = async (pdbId: string): Promise<PredictionResp
     };
   });
 
+  // 解析 PDB 获取残基和链信息 (用于 fallback)
+  const pdbInfo = parsePDBForPAE(pdbContent);
+
+  // 从 AlphaFold API 获取真实的 pLDDT 和 PAE 数据
+  // 如果 API 失败则回退到 mock 数据
+  const { plddt, pae, fromAPI } = await fetchAlphaFoldQualityData(
+    pdbId,
+    pdbInfo.numResidues,
+    pdbInfo.chainBoundaries
+  );
+
+  console.log(`[MockAPI] Quality data source: ${fromAPI ? 'AlphaFold API' : 'Mock'}`);
+
+  // 构建链信息
+  const chains: ChainInfo[] = [];
+  let prevBoundary = 0;
+  const boundaries = fromAPI ? [] : pdbInfo.chainBoundaries;
+  const numResidues = fromAPI ? pae.numResidues : pdbInfo.numResidues;
+
+  for (let i = 0; i <= boundaries.length; i++) {
+    const endIndex = boundaries[i] ?? numResidues;
+    const chainId = String.fromCharCode(65 + i);
+
+    chains.push({
+      chainId,
+      startIndex: prevBoundary,
+      endIndex,
+      residueCount: endIndex - prevBoundary,
+      type: 'protein',
+    });
+
+    prevBoundary = endIndex;
+  }
+
+  // 模型整体指标 (如果从 API 获取，计算真实值)
+  const pTM = fromAPI ? 0.7 + (plddt.averageScore / 100) * 0.25 : 0.7 + Math.random() * 0.25;
+  const ipTM = chains.length > 1 ? 0.5 + Math.random() * 0.4 : undefined;
+
+  const qualityData: AlphaFoldQualityData = {
+    modelConfidence: { pTM, ipTM },
+    plddt,
+    pae,
+    chains,
+  };
+
+  // 兼容旧版 - 单独的 PAE 数据
+  const paeData = pae;
+
   return {
     jobId: `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     status: 'completed',
     targetName: getTargetName(pdbId),
     targetPdbId: pdbId.toUpperCase(),
     candidates,
+    qualityData,  // 新版: 完整的 AlphaFold 质量数据
+    paeData,      // 兼容旧版
     generatedAt: new Date().toISOString(),
   };
 };
@@ -222,6 +400,191 @@ function generateMockSmiles(index: number): string {
     'COC1=C(C=C(C=C1)C2=CC3=C(N2)N=CN=C3NC4=CC(=CC=C4)Br)OC',
   ];
   return smilesList[index % smilesList.length];
+}
+
+/**
+ * 生成模拟 pLDDT 数据
+ * pLDDT (predicted Local Distance Difference Test) 置信度分数 (0-100)
+ * 
+ * 模拟真实 AlphaFold 预测的分布:
+ * - 结构域核心区域: 高置信度 (>90)
+ * - 二级结构区域: 中高置信度 (70-90)
+ * - Loop 区域: 中等置信度 (50-70)
+ * - N/C 末端和无序区: 低置信度 (<50)
+ */
+function generateMockPLDDT(numResidues: number, chainInfos: ChainInfo[]): PLDDTData {
+  const scores: number[] = [];
+  const residueNumbers: number[] = [];
+  const chainIds: string[] = [];
+  
+  let totalScore = 0;
+  let currentChainIndex = 0;
+  
+  for (let i = 0; i < numResidues; i++) {
+    // 确定当前残基所在的链
+    while (currentChainIndex < chainInfos.length - 1 && 
+           i >= chainInfos[currentChainIndex].endIndex) {
+      currentChainIndex++;
+    }
+    const currentChain = chainInfos[currentChainIndex] || { chainId: 'A' };
+    
+    // 计算在链内的相对位置 (0-1)
+    const chainStart = currentChain.startIndex || 0;
+    const chainEnd = currentChain.endIndex || numResidues;
+    const chainLength = chainEnd - chainStart;
+    const relativePos = chainLength > 0 ? (i - chainStart) / chainLength : 0.5;
+    
+    // 基础分数 - 模拟真实分布
+    let baseScore: number;
+    
+    // N端和C端区域 - 较低置信度
+    if (relativePos < 0.05 || relativePos > 0.95) {
+      baseScore = 30 + Math.random() * 30; // 30-60
+    }
+    // 核心区域 - 高置信度
+    else if (relativePos > 0.2 && relativePos < 0.8) {
+      // 模拟二级结构的周期性
+      const period = Math.sin(i * 0.3) * 0.5 + 0.5;
+      if (period > 0.7) {
+        // α-螺旋或β-折叠核心
+        baseScore = 85 + Math.random() * 15; // 85-100
+      } else if (period > 0.3) {
+        // 常规二级结构
+        baseScore = 70 + Math.random() * 20; // 70-90
+      } else {
+        // Loop 区域
+        baseScore = 50 + Math.random() * 25; // 50-75
+      }
+    }
+    // 过渡区域
+    else {
+      baseScore = 55 + Math.random() * 30; // 55-85
+    }
+    
+    // 添加一些随机波动
+    const noise = (Math.random() - 0.5) * 10;
+    const finalScore = Math.max(0, Math.min(100, baseScore + noise));
+    
+    scores.push(finalScore);
+    residueNumbers.push(i + 1);
+    chainIds.push(currentChain.chainId);
+    totalScore += finalScore;
+  }
+  
+  return {
+    scores,
+    residueNumbers,
+    chainIds,
+    averageScore: numResidues > 0 ? totalScore / numResidues : 0,
+  };
+}
+
+/**
+ * 生成模拟 PAE 数据
+ * PAE (Predicted Aligned Error) 表示残基间相对位置的预测误差
+ */
+function generateMockPAE(numResidues: number, chainBoundaries: number[] = []): PAEData {
+  const matrix: number[][] = [];
+  let maxPAE = 0;
+  
+  for (let i = 0; i < numResidues; i++) {
+    const row: number[] = [];
+    for (let j = 0; j < numResidues; j++) {
+      // 对角线上误差为0
+      if (i === j) {
+        row.push(0);
+        continue;
+      }
+      
+      // 计算基础误差 - 距离越远误差越大
+      const distance = Math.abs(i - j);
+      let baseError = Math.min(distance * 0.1, 15);
+      
+      // 检查是否在同一个链内
+      let sameChain = true;
+      for (const boundary of chainBoundaries) {
+        if ((i < boundary && j >= boundary) || (j < boundary && i >= boundary)) {
+          sameChain = false;
+          break;
+        }
+      }
+      
+      // 不同链之间的误差更高
+      if (!sameChain) {
+        baseError = Math.min(baseError + 8 + Math.random() * 10, 30);
+      }
+      
+      // 添加结构域效应 - 某些区域内部误差低
+      const domainSize = 50;
+      const domainI = Math.floor(i / domainSize);
+      const domainJ = Math.floor(j / domainSize);
+      
+      if (domainI === domainJ) {
+        baseError = Math.max(0, baseError - 5);
+      }
+      
+      // 添加随机噪声
+      const noise = (Math.random() - 0.5) * 4;
+      const finalError = Math.max(0, Math.min(30, baseError + noise));
+      
+      row.push(finalError);
+      maxPAE = Math.max(maxPAE, finalError);
+    }
+    matrix.push(row);
+  }
+  
+  return {
+    matrix,
+    maxPAE,
+    chainBoundaries,
+    numResidues,
+  };
+}
+
+/**
+ * 从 PDB 内容解析残基数和链边界
+ */
+function parsePDBForPAE(pdbContent: string): { numResidues: number; chainBoundaries: number[] } {
+  const chainResidues = new Map<string, Set<number>>();
+
+  const lines = pdbContent.split('\n');
+  for (const line of lines) {
+    if (line.startsWith('ATOM')) {
+      const chainId = line.substring(21, 22).trim() || 'A';
+      const resSeq = parseInt(line.substring(22, 26).trim(), 10);
+      
+      if (isNaN(resSeq)) continue;
+      
+      if (!chainResidues.has(chainId)) {
+        chainResidues.set(chainId, new Set());
+      }
+      chainResidues.get(chainId)!.add(resSeq);
+    }
+  }
+
+  // Calculate total residues and chain boundaries
+  const chainIds = Array.from(chainResidues.keys()).sort();
+  let totalResidues = 0;
+  const chainBoundaries: number[] = [];
+  
+  for (let i = 0; i < chainIds.length; i++) {
+    const chainId = chainIds[i];
+    const residueCount = chainResidues.get(chainId)?.size || 0;
+    totalResidues += residueCount;
+    
+    // Add boundary after each chain except the last one
+    if (i < chainIds.length - 1) {
+      chainBoundaries.push(totalResidues);
+    }
+  }
+
+  // Ensure we have a reasonable number of residues for PAE visualization
+  const numResidues = Math.max(totalResidues, 50);
+
+  return {
+    numResidues,
+    chainBoundaries,
+  };
 }
 
 /**

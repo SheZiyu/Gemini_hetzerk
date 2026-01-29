@@ -3,14 +3,13 @@
 import React, { useState } from 'react';
 import dynamic from 'next/dynamic';
 import { fetchDrugPrediction, getAvailableTargets } from '@/lib/mock-service';
-import { DrugCandidate } from '@/lib/types';
+import { DrugCandidate, PAEData, PLDDTData } from '@/lib/types';
 
-// 动态导入 Molecule3D，禁用 SSR（3Dmol.js 需要浏览器环境）
-const Molecule3D = dynamic(() => import('@/components/Molecule3D'), {
+const ProteinViewerPanel = dynamic(() => import('@/components/ProteinViewerPanel'), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center h-full min-h-[500px] bg-slate-50 rounded-xl">
-      <div className="text-slate-400">Loading 3D viewer...</div>
+    <div className="flex items-center justify-center h-full min-h-[350px] bg-slate-50 rounded-xl">
+      <div className="text-slate-400">Loading viewer...</div>
     </div>
   ),
 });
@@ -38,31 +37,37 @@ import {
 } from 'lucide-react';
 
 export default function DrugDesignPage() {
-  // 状态管理
   const [query, setQuery] = useState('6GFS');
   const [loading, setLoading] = useState(false);
   const [candidates, setCandidates] = useState<DrugCandidate[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [targetName, setTargetName] = useState<string>('');
+  const [paeData, setPaeData] = useState<PAEData | undefined>(undefined);
+  const [plddtData, setPlddtData] = useState<PLDDTData | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
 
-  // 获取当前选中的分子数据
   const selectedCandidate = candidates.find(c => c.id === selectedId);
   const availableTargets = getAvailableTargets();
 
-  // 处理预测请求
   const handlePredict = async () => {
     if (!query.trim()) return;
     setLoading(true);
     setCandidates([]);
     setError(null);
     setSelectedId(null);
+    setPaeData(undefined);
+    setPlddtData(undefined);
 
     try {
       const response = await fetchDrugPrediction(query.trim());
 
       setCandidates(response.candidates);
       setTargetName(response.targetName);
+      setPaeData(response.paeData);
+      // 设置 pLDDT 数据
+      if (response.qualityData?.plddt) {
+        setPlddtData(response.qualityData.plddt);
+      }
       if (response.candidates.length > 0) {
         setSelectedId(response.candidates[0].id);
       }
@@ -91,7 +96,7 @@ export default function DrugDesignPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="h-screen bg-slate-50 flex flex-col overflow-hidden">
       {/* 顶部导航栏 */}
       <header className="h-14 bg-white border-b border-slate-200 flex items-center px-6 justify-between sticky top-0 z-50 shadow-sm">
         <div className="flex items-center gap-3">
@@ -275,31 +280,31 @@ export default function DrugDesignPage() {
           </div>
         </aside>
 
-        {/* 中间：3D Viewer */}
-        <div className="flex-1 flex relative bg-slate-100">
-          <div className="flex-1 p-4">
-            {selectedCandidate ? (
-              <Molecule3D
-                key={selectedCandidate.id}
-                data={selectedCandidate}
-                targetName={targetName}
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-white rounded-xl border border-slate-200">
-                <div className="text-center px-6">
-                  <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-slate-100 to-slate-200 rounded-2xl flex items-center justify-center">
-                    <Zap className="w-8 h-8 text-slate-300" />
-                  </div>
-                  <h3 className="text-lg font-medium text-slate-600 mb-2">
-                    3D Structure Viewer
-                  </h3>
-                  <p className="text-sm text-slate-400 max-w-sm">
-                    Select a candidate from the list to view the protein-ligand complex in 3D
-                  </p>
+        {/* 中间：Protein Viewer Panel (3D + PAE + Information) */}
+        <div className="flex-1 flex relative min-w-0 overflow-hidden">
+          {selectedCandidate ? (
+            <ProteinViewerPanel
+              key={selectedCandidate.id}
+              candidate={selectedCandidate}
+              targetName={targetName}
+              paeData={paeData}
+              plddtData={plddtData}
+            />
+          ) : (
+            <div className="flex-1 flex items-center justify-center bg-slate-100 p-3">
+              <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+                <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-slate-100 to-slate-200 rounded-2xl flex items-center justify-center">
+                  <Zap className="w-8 h-8 text-slate-300" />
                 </div>
+                <h3 className="text-lg font-medium text-slate-600 mb-2">
+                  3D Structure Viewer
+                </h3>
+                <p className="text-sm text-slate-400 max-w-sm">
+                  Select a candidate from the list to view the protein structure with PAE analysis
+                </p>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         {/* 右侧：详细属性面板 */}

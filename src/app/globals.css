@@ -76,3 +76,11 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* 隐藏PDBe Molstar自带的控制面板 */
+.msp-viewport-controls,
+.msp-viewport-controls-buttons,
+.msp-btn-link,
+.msp-semi-transparent-background {
+  display: none !important;
+}
