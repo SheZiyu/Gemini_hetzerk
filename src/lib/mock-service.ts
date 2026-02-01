@@ -1,4 +1,4 @@
-// lib/mock-service.ts
+// src/lib/mock-service.ts
 import {
   DrugCandidate,
   PredictionResponse,
@@ -7,6 +7,35 @@ import {
   AlphaFoldQualityData,
   ChainInfo
 } from './types';
+
+// ============================================
+// Backend wiring (NEW)
+// ============================================
+
+function getApiBaseUrl(): string {
+  // e.g. http://localhost:8080 or https://backend-api-xxxxx.run.app
+  return process.env.NEXT_PUBLIC_API_BASE_URL || '';
+}
+
+async function callBackendGenerate(pdbId: string): Promise<PredictionResponse> {
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) {
+    throw new Error('NEXT_PUBLIC_API_BASE_URL is not set');
+  }
+
+  const res = await fetch(`${baseUrl}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pdb_id: pdbId }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Backend /api/generate failed: ${res.status} ${text}`);
+  }
+
+  return (await res.json()) as PredictionResponse;
+}
 
 // ============================================
 // 预生成的质量数据配置
@@ -177,7 +206,6 @@ const AI_ANALYSIS_TEMPLATES = [
 ];
 
 // --- Mock SDF 分子数据（基于6GFS.pdb中的AF15配体 - 脂肪酸分子）---
-// 这是从PDB的HETATM记录转换而来的SDF格式配体
 const MOCK_LIGAND_SDF_BASE = `
      6GFS AF15     3D
 
@@ -220,7 +248,6 @@ M  END
 
 // 生成多个变体（轻微修改坐标以模拟不同候选药物）
 const MOCK_LIGAND_SDFS = Array.from({ length: 10 }, (_, i) => {
-  // 为每个候选药物添加轻微的坐标偏移
   const offset = i * 0.3;
   return MOCK_LIGAND_SDF_BASE.replace(/(\d+\.\d+)/g, (match) => {
     const num = parseFloat(match);
@@ -230,12 +257,12 @@ const MOCK_LIGAND_SDFS = Array.from({ length: 10 }, (_, i) => {
 
 // --- 真实 PDB URL（使用公开的蛋白质结构）---
 const PDB_URLS: Record<string, string> = {
-  '6gfs': '/mock_data/6gfs.pdb', // Beta-lactoglobulin with fatty acid (本地文件)
-  '1iep': 'https://files.rcsb.org/download/1IEP.pdb', // Abl kinase with Imatinib
-  '8aw3': 'https://files.rcsb.org/download/8AW3.pdb', // EGFR kinase
-  '3poz': 'https://files.rcsb.org/download/3POZ.pdb', // JAK2
-  '2hyy': 'https://files.rcsb.org/download/2HYY.pdb', // EGFR with Gefitinib
-  '4yne': 'https://files.rcsb.org/download/4YNE.pdb', // ALK
+  '6gfs': '/mock_data/6gfs.pdb',
+  '1iep': 'https://files.rcsb.org/download/1IEP.pdb',
+  '8aw3': 'https://files.rcsb.org/download/8AW3.pdb',
+  '3poz': 'https://files.rcsb.org/download/3POZ.pdb',
+  '2hyy': 'https://files.rcsb.org/download/2HYY.pdb',
+  '4yne': 'https://files.rcsb.org/download/4YNE.pdb',
 };
 
 // --- Mock PDB 数据（当无法获取远程数据时使用）---
@@ -249,13 +276,23 @@ HELIX    1   1 ALA A    1  ALA A   10  1
 END
 `;
 
-// --- 主要 Mock 函数 ---
+// ============================================
+// Main function
+// ============================================
 
-/**
- * 模拟调用后端 Diffusion Model 的预测接口
- * 以后你可以直接替换这个函数的内部实现为真实 API 调用
- */
 export const fetchDrugPrediction = async (pdbId: string): Promise<PredictionResponse> => {
+  console.log(`[Service] fetchDrugPrediction target=${pdbId}`);
+
+  // ✅ NEW: Prefer backend. If backend fails, fallback to original mock.
+  try {
+    const backendResp = await callBackendGenerate(pdbId);
+    console.log('[Service] Using backend response');
+    return backendResp;
+  } catch (e) {
+    console.warn('[Service] Backend failed, fallback to local mock', e);
+  }
+
+  // --- original mock below (unchanged behavior) ---
   console.log(`[MockAPI] Generating drugs for target: ${pdbId}`);
 
   // 模拟网络延迟 (1.5-3秒)
@@ -311,15 +348,14 @@ export const fetchDrugPrediction = async (pdbId: string): Promise<PredictionResp
   // 解析 PDB 获取残基和链信息 (用于 fallback)
   const pdbInfo = parsePDBForPAE(pdbContent);
 
-  // 从 AlphaFold API 获取真实的 pLDDT 和 PAE 数据
-  // 如果 API 失败则回退到 mock 数据
+  // 如果预生成数据失败则回退到 mock 数据
   const { plddt, pae, fromAPI } = await fetchAlphaFoldQualityData(
     pdbId,
     pdbInfo.numResidues,
     pdbInfo.chainBoundaries
   );
 
-  console.log(`[MockAPI] Quality data source: ${fromAPI ? 'AlphaFold API' : 'Mock'}`);
+  console.log(`[MockAPI] Quality data source: ${fromAPI ? 'Pre-generated' : 'Mock'}`);
 
   // 构建链信息
   const chains: ChainInfo[] = [];
@@ -342,7 +378,7 @@ export const fetchDrugPrediction = async (pdbId: string): Promise<PredictionResp
     prevBoundary = endIndex;
   }
 
-  // 模型整体指标 (如果从 API 获取，计算真实值)
+  // 模型整体指标
   const pTM = fromAPI ? 0.7 + (plddt.averageScore / 100) * 0.25 : 0.7 + Math.random() * 0.25;
   const ipTM = chains.length > 1 ? 0.5 + Math.random() * 0.4 : undefined;
 
@@ -353,7 +389,6 @@ export const fetchDrugPrediction = async (pdbId: string): Promise<PredictionResp
     chains,
   };
 
-  // 兼容旧版 - 单独的 PAE 数据
   const paeData = pae;
 
   return {
@@ -362,8 +397,8 @@ export const fetchDrugPrediction = async (pdbId: string): Promise<PredictionResp
     targetName: getTargetName(pdbId),
     targetPdbId: pdbId.toUpperCase(),
     candidates,
-    qualityData,  // 新版: 完整的 AlphaFold 质量数据
-    paeData,      // 兼容旧版
+    qualityData,
+    paeData,
     generatedAt: new Date().toISOString(),
   };
 };
@@ -404,73 +439,49 @@ function generateMockSmiles(index: number): string {
 
 /**
  * 生成模拟 pLDDT 数据
- * pLDDT (predicted Local Distance Difference Test) 置信度分数 (0-100)
- * 
- * 模拟真实 AlphaFold 预测的分布:
- * - 结构域核心区域: 高置信度 (>90)
- * - 二级结构区域: 中高置信度 (70-90)
- * - Loop 区域: 中等置信度 (50-70)
- * - N/C 末端和无序区: 低置信度 (<50)
  */
 function generateMockPLDDT(numResidues: number, chainInfos: ChainInfo[]): PLDDTData {
   const scores: number[] = [];
   const residueNumbers: number[] = [];
   const chainIds: string[] = [];
-  
+
   let totalScore = 0;
   let currentChainIndex = 0;
-  
+
   for (let i = 0; i < numResidues; i++) {
-    // 确定当前残基所在的链
-    while (currentChainIndex < chainInfos.length - 1 && 
+    while (currentChainIndex < chainInfos.length - 1 &&
            i >= chainInfos[currentChainIndex].endIndex) {
       currentChainIndex++;
     }
     const currentChain = chainInfos[currentChainIndex] || { chainId: 'A' };
-    
-    // 计算在链内的相对位置 (0-1)
+
     const chainStart = currentChain.startIndex || 0;
     const chainEnd = currentChain.endIndex || numResidues;
     const chainLength = chainEnd - chainStart;
     const relativePos = chainLength > 0 ? (i - chainStart) / chainLength : 0.5;
-    
-    // 基础分数 - 模拟真实分布
+
     let baseScore: number;
-    
-    // N端和C端区域 - 较低置信度
+
     if (relativePos < 0.05 || relativePos > 0.95) {
-      baseScore = 30 + Math.random() * 30; // 30-60
-    }
-    // 核心区域 - 高置信度
-    else if (relativePos > 0.2 && relativePos < 0.8) {
-      // 模拟二级结构的周期性
+      baseScore = 30 + Math.random() * 30;
+    } else if (relativePos > 0.2 && relativePos < 0.8) {
       const period = Math.sin(i * 0.3) * 0.5 + 0.5;
-      if (period > 0.7) {
-        // α-螺旋或β-折叠核心
-        baseScore = 85 + Math.random() * 15; // 85-100
-      } else if (period > 0.3) {
-        // 常规二级结构
-        baseScore = 70 + Math.random() * 20; // 70-90
-      } else {
-        // Loop 区域
-        baseScore = 50 + Math.random() * 25; // 50-75
-      }
+      if (period > 0.7) baseScore = 85 + Math.random() * 15;
+      else if (period > 0.3) baseScore = 70 + Math.random() * 20;
+      else baseScore = 50 + Math.random() * 25;
+    } else {
+      baseScore = 55 + Math.random() * 30;
     }
-    // 过渡区域
-    else {
-      baseScore = 55 + Math.random() * 30; // 55-85
-    }
-    
-    // 添加一些随机波动
+
     const noise = (Math.random() - 0.5) * 10;
     const finalScore = Math.max(0, Math.min(100, baseScore + noise));
-    
+
     scores.push(finalScore);
     residueNumbers.push(i + 1);
     chainIds.push(currentChain.chainId);
     totalScore += finalScore;
   }
-  
+
   return {
     scores,
     residueNumbers,
@@ -481,26 +492,22 @@ function generateMockPLDDT(numResidues: number, chainInfos: ChainInfo[]): PLDDTD
 
 /**
  * 生成模拟 PAE 数据
- * PAE (Predicted Aligned Error) 表示残基间相对位置的预测误差
  */
 function generateMockPAE(numResidues: number, chainBoundaries: number[] = []): PAEData {
   const matrix: number[][] = [];
   let maxPAE = 0;
-  
+
   for (let i = 0; i < numResidues; i++) {
     const row: number[] = [];
     for (let j = 0; j < numResidues; j++) {
-      // 对角线上误差为0
       if (i === j) {
         row.push(0);
         continue;
       }
-      
-      // 计算基础误差 - 距离越远误差越大
+
       const distance = Math.abs(i - j);
       let baseError = Math.min(distance * 0.1, 15);
-      
-      // 检查是否在同一个链内
+
       let sameChain = true;
       for (const boundary of chainBoundaries) {
         if ((i < boundary && j >= boundary) || (j < boundary && i >= boundary)) {
@@ -508,31 +515,28 @@ function generateMockPAE(numResidues: number, chainBoundaries: number[] = []): P
           break;
         }
       }
-      
-      // 不同链之间的误差更高
+
       if (!sameChain) {
         baseError = Math.min(baseError + 8 + Math.random() * 10, 30);
       }
-      
-      // 添加结构域效应 - 某些区域内部误差低
+
       const domainSize = 50;
       const domainI = Math.floor(i / domainSize);
       const domainJ = Math.floor(j / domainSize);
-      
+
       if (domainI === domainJ) {
         baseError = Math.max(0, baseError - 5);
       }
-      
-      // 添加随机噪声
+
       const noise = (Math.random() - 0.5) * 4;
       const finalError = Math.max(0, Math.min(30, baseError + noise));
-      
+
       row.push(finalError);
       maxPAE = Math.max(maxPAE, finalError);
     }
     matrix.push(row);
   }
-  
+
   return {
     matrix,
     maxPAE,
@@ -552,9 +556,9 @@ function parsePDBForPAE(pdbContent: string): { numResidues: number; chainBoundar
     if (line.startsWith('ATOM')) {
       const chainId = line.substring(21, 22).trim() || 'A';
       const resSeq = parseInt(line.substring(22, 26).trim(), 10);
-      
+
       if (isNaN(resSeq)) continue;
-      
+
       if (!chainResidues.has(chainId)) {
         chainResidues.set(chainId, new Set());
       }
@@ -562,23 +566,20 @@ function parsePDBForPAE(pdbContent: string): { numResidues: number; chainBoundar
     }
   }
 
-  // Calculate total residues and chain boundaries
   const chainIds = Array.from(chainResidues.keys()).sort();
   let totalResidues = 0;
   const chainBoundaries: number[] = [];
-  
+
   for (let i = 0; i < chainIds.length; i++) {
     const chainId = chainIds[i];
     const residueCount = chainResidues.get(chainId)?.size || 0;
     totalResidues += residueCount;
-    
-    // Add boundary after each chain except the last one
+
     if (i < chainIds.length - 1) {
       chainBoundaries.push(totalResidues);
     }
   }
 
-  // Ensure we have a reasonable number of residues for PAE visualization
   const numResidues = Math.max(totalResidues, 50);
 
   return {
@@ -594,9 +595,9 @@ export const getAvailableTargets = () => {
   return [
     { pdbId: '6GFS', name: 'Beta-Lactoglobulin', description: 'Transport protein with fatty acid binding' },
     { pdbId: '1IEP', name: 'Abl Kinase', description: 'BCR-ABL chronic myeloid leukemia target' },
-    { pdbId: '8AW3', name: 'EGFR Kinase', description: 'Epidermal growth factor receptor' },
-    { pdbId: '3POZ', name: 'JAK2 Kinase', description: 'Janus kinase 2 for myeloproliferative disorders' },
-    { pdbId: '2HYY', name: 'EGFR-Gefitinib', description: 'EGFR bound with Gefitinib' },
-    { pdbId: '4YNE', name: 'ALK Kinase', description: 'Anaplastic lymphoma kinase' },
+    { pdbId: '8AW3', name: 'EGFR Kinase Domain', description: 'Epidermal growth factor receptor' },
+    { pdbId: '3POZ', name: 'JAK2 Kinase Domain', description: 'Janus kinase 2 for myeloproliferative disorders' },
+    { pdbId: '2HYY', name: 'EGFR with Gefitinib', description: 'EGFR bound with Gefitinib' },
+    { pdbId: '4YNE', name: 'ALK Kinase Domain', description: 'Anaplastic lymphoma kinase' },
   ];
 };
