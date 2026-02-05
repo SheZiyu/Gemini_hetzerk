@@ -1,0 +1,2 @@
+complex_name,protein_path,ligand_description,protein_sequence
+agent_docking,/home/ziyu/hackathon-data/test/1A2C.pdb,/home/ziyu/hackathon-data/test/test_ligand.sdf,
