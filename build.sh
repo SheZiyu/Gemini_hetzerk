@@ -109,7 +109,7 @@ needs_init() {
     fi
 
     # 检查关键依赖是否存在
-    if [ -d "frontend/node_modules" ] && [ -d "backend/venv" ]; then
+    if [ -d "frontend/node_modules" ]; then
         # 创建标记文件
         touch "$INIT_MARKER"
         return 1  # 不需要初始化
@@ -226,16 +226,8 @@ install_backend_deps() {
 
     cd backend
 
-    if [ ! -d "venv" ]; then
-        log_step "创建 Python 虚拟环境..."
-        python3 -m venv venv
-    fi
-
-    log_step "安装 Python 依赖..."
-    source venv/bin/activate
-    pip install --upgrade pip -q
-    pip install -r requirements.txt -q
-    deactivate
+    log_step "安装 Python 依赖到系统..."
+    pip3 install --break-system-packages -r requirements.txt -q 2>&1 | grep -v "Requirement already satisfied" || true
 
     log_success "后端依赖安装完成"
     cd "$SCRIPT_DIR"
@@ -255,17 +247,9 @@ install_agent_deps() {
 
     cd "$agent_dir"
 
-    if [ ! -d "venv" ]; then
-        log_step "创建 Python 虚拟环境..."
-        python3 -m venv venv
-    fi
-
     if [ -f "requirements.txt" ]; then
-        log_step "安装 Python 依赖..."
-        source venv/bin/activate
-        pip install --upgrade pip -q
-        pip install -r requirements.txt -q
-        deactivate
+        log_step "安装 Python 依赖到系统..."
+        pip3 install --break-system-packages -r requirements.txt -q 2>&1 | grep -v "Requirement already satisfied" || true
         log_success "AI Agent 依赖安装完成"
     else
         log_warn "requirements.txt 不存在，跳过依赖安装"
@@ -467,8 +451,7 @@ cmd_dev() {
     # 启动后端
     log_info "启动后端服务 (Port 8000)..."
     cd backend
-    source venv/bin/activate
-    uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
+    python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
     BACKEND_PID=$!
     cd "$SCRIPT_DIR"
     log_success "后端已启动 (PID: $BACKEND_PID)"
@@ -580,10 +563,7 @@ echo "🚀 Starting DrugDiffusion Production"
 
 # 启动后端
 cd backend
-python3 -m venv venv 2>/dev/null || true
-source venv/bin/activate
-pip install -r requirements.txt -q
-uvicorn main:app --host 0.0.0.0 --port 8000 &
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 &
 cd ..
 
 # 启动前端
@@ -625,14 +605,6 @@ cmd_clean() {
     log_info "清理前端依赖..."
     rm -rf frontend/node_modules frontend/.next
     log_success "前端依赖已清理"
-
-    log_info "清理后端虚拟环境..."
-    rm -rf backend/venv
-    log_success "后端虚拟环境已清理"
-
-    log_info "清理 AI Agent 虚拟环境..."
-    rm -rf ai-agents/gemini-molecular-ranker/venv
-    log_success "AI Agent 虚拟环境已清理"
 
     log_info "清理构建产物..."
     rm -rf dist build

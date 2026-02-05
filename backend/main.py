@@ -7,6 +7,23 @@ import gzip
 import sys
 import tempfile
 from pathlib import Path
+import os
+
+# 🔧 关键修复：在所有导入之前先加载 .env 文件
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
+
+# 确保代理环境变量被设置
+http_proxy = os.getenv('HTTP_PROXY')
+https_proxy = os.getenv('HTTPS_PROXY')
+if http_proxy or https_proxy:
+    print(f"🌐 Backend proxy configuration:")
+    if http_proxy:
+        print(f"   HTTP_PROXY: {http_proxy}")
+    if https_proxy:
+        print(f"   HTTPS_PROXY: {https_proxy}")
+else:
+    print("⚠️  Warning: No proxy configured in backend/.env")
 
 app = FastAPI()
 

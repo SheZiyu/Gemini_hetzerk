@@ -3,12 +3,14 @@ Main Orchestrator Agent
 Coordinates all tools to solve molecular docking tasks
 """
 import google.generativeai as genai
+import httpx
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import json
 from datetime import datetime
 import uuid
+import os
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -30,7 +32,30 @@ class OrchestratorAgent:
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY not set")
 
+        # Check and log proxy configuration
+        import os
+        http_proxy = os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
+        https_proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+        
+        if http_proxy or https_proxy:
+            print(f"🌐 Proxy detected:")
+            if http_proxy:
+                print(f"   HTTP_PROXY: {http_proxy}")
+            if https_proxy:
+                print(f"   HTTPS_PROXY: {https_proxy}")
+            
+            # Ensure environment variables are properly set for all child processes
+            os.environ['HTTP_PROXY'] = http_proxy if http_proxy else ''
+            os.environ['HTTPS_PROXY'] = https_proxy if https_proxy else ''
+            os.environ['http_proxy'] = http_proxy if http_proxy else ''
+            os.environ['https_proxy'] = https_proxy if https_proxy else ''
+            
+            print("✅ Proxy environment variables set")
+        else:
+            print("⚠️  No proxy configured. If in China, API calls may fail.")
+
         # Initialize Gemini
+        # google-generativeai (>=0.8) automatically uses HTTP_PROXY/HTTPS_PROXY
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(
             model_name=Config.GEMINI_MODEL,
