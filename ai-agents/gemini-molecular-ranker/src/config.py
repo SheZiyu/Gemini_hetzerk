@@ -3,8 +3,26 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from multiple possible locations
+# Priority: 1. Current working directory, 2. AI agent directory, 3. Backend directory
+AI_AGENT_DIR = Path(__file__).parent.parent
+PROJECT_ROOT = AI_AGENT_DIR.parent.parent
+
+# Try multiple .env locations
+env_paths = [
+    Path.cwd() / ".env",              # Current working directory
+    AI_AGENT_DIR / ".env",            # AI agent directory
+    PROJECT_ROOT / "backend" / ".env", # Backend directory
+    PROJECT_ROOT / ".env",            # Project root
+]
+
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(env_path)
+        break
+else:
+    # Fallback: just call load_dotenv() to try default behavior
+    load_dotenv()
 
 class Config:
     """Central configuration"""

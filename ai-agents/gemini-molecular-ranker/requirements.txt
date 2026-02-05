@@ -1,0 +1,20 @@
+# Gemini Molecular Ranker Dependencies
+
+# Gemini LLM
+google-generativeai>=0.3.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Data handling
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Optional: Molecular scoring (requires rdkit, biopython, scipy)
+# These are complex dependencies and may require special installation
+# rdkit  # Install via conda: conda install -c conda-forge rdkit
+# biopython>=1.81
+# scipy>=1.10.0
