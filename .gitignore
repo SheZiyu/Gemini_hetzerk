@@ -58,3 +58,6 @@ next-env.d.ts
 
 # Claude settings (local)
 .claude/settings.local.json
+
+# Build script marker
+.initialized
