@@ -12,34 +12,17 @@ export interface ResidueRange {
   chainId?: string;
 }
 
-// PAE 双色高亮范围
-export interface PAEHighlightRange {
-  scoredStart: number;
-  scoredEnd: number;
-  alignedStart: number;
-  alignedEnd: number;
-}
-
 interface Molecule3DProps {
   data: DrugCandidate;
   targetName?: string;
   highlightRange?: ResidueRange | null;
-  paeHighlight?: PAEHighlightRange | null;
   onResidueClick?: (chainId: string, residueNumber: number) => void;
 }
-
-const PLDDT_COLORS = {
-  veryHigh: '#0053d6',
-  confident: '#65cbf3',
-  low: '#ffdb13',
-  veryLow: '#ff7d45',
-};
 
 const Molecule3D: React.FC<Molecule3DProps> = ({
   data,
   targetName,
   highlightRange,
-  paeHighlight,
   onResidueClick,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -97,7 +80,7 @@ const Molecule3D: React.FC<Molecule3DProps> = ({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const options: any = {
           customData: { url: dataUrl, format: 'pdb', binary: false },
-          alphafoldView: true,
+          alphafoldView: false,
           bgColor: { r: 250, g: 250, b: 250 },
           hideControls: true,
           hideCanvasControls: ['expand', 'controlToggle', 'controlInfo', 'selection', 'animation', 'snapshot'],
@@ -177,13 +160,13 @@ const Molecule3D: React.FC<Molecule3DProps> = ({
   // Track if we have an active highlight to know when to clear
   const hadHighlightRef = useRef(false);
 
-  // Handle highlight range changes (single range or PAE dual-color)
+  // Handle highlight range changes
   useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const viewer = viewerInstanceRef.current as any;
     if (!viewer?.plugin || isLoading) return;
 
-    const hasHighlight = !!(paeHighlight || highlightRange);
+    const hasHighlight = !!highlightRange;
 
     const applyHighlight = async () => {
       try {
@@ -200,46 +183,7 @@ const Molecule3D: React.FC<Molecule3DProps> = ({
 
         hadHighlightRef.current = true;
 
-        // Check for PAE dual-color highlight first
-        if (paeHighlight) {
-          const { scoredStart, scoredEnd, alignedStart, alignedEnd } = paeHighlight;
-
-          // Create two selection queries with different colors
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const selections: any[] = [];
-
-          // Scored residues (X-axis) - Blue
-          selections.push({
-            entity_id: '1',
-            start_residue_number: scoredStart,
-            end_residue_number: scoredEnd,
-            color: { r: 59, g: 130, b: 246 }, // Blue
-            focus: false,
-          });
-
-          // Aligned residues (Y-axis) - Green
-          selections.push({
-            entity_id: '1',
-            start_residue_number: alignedStart,
-            end_residue_number: alignedEnd,
-            color: { r: 34, g: 197, b: 94 }, // Green
-            focus: false,
-          });
-
-          // Try using PDBe Molstar's selection API
-          if (viewer.visual?.select) {
-            await viewer.visual.select({
-              data: selections,
-              nonSelectedColor: { r: 220, g: 220, b: 220 }
-            });
-          }
-
-          // Update selection info display
-          setSelectionInfo(`Scored: ${scoredStart}-${scoredEnd} | Aligned: ${alignedStart}-${alignedEnd}`);
-          return;
-        }
-
-        // Single highlight range (legacy)
+        // Single highlight range
         if (highlightRange) {
           const { startResidue, endResidue, chainId } = highlightRange;
 
@@ -265,16 +209,14 @@ const Molecule3D: React.FC<Molecule3DProps> = ({
 
       } catch (error) {
         console.warn('Failed to highlight residues:', error);
-        if (paeHighlight) {
-          setSelectionInfo(`Scored: ${paeHighlight.scoredStart}-${paeHighlight.scoredEnd} | Aligned: ${paeHighlight.alignedStart}-${paeHighlight.alignedEnd}`);
-        } else if (highlightRange) {
+        if (highlightRange) {
           setSelectionInfo(`Residues ${highlightRange.startResidue}-${highlightRange.endResidue}`);
         }
       }
     };
 
     applyHighlight();
-  }, [highlightRange, paeHighlight, isLoading]);
+  }, [highlightRange, isLoading]);
 
   const handleReset = useCallback(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -357,25 +299,10 @@ const Molecule3D: React.FC<Molecule3DProps> = ({
     <div className="w-full h-full relative flex flex-col rounded-xl overflow-hidden bg-white border border-slate-200">
       <div className="absolute top-3 left-3 z-10">
         <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-3 max-w-[200px]">
-          <div className="mb-2">
+          <div>
             <div className="text-[10px] text-gray-400 uppercase tracking-wide">Structure</div>
             <h3 className="font-semibold text-gray-900 text-sm truncate">{targetName || 'Target Protein'}</h3>
             <p className="text-xs text-gray-600 truncate">{data.name}</p>
-          </div>
-          <div className="border-t border-gray-100 pt-2">
-            <div className="flex gap-0.5">
-              {[
-                { color: PLDDT_COLORS.veryHigh, label: '>90' },
-                { color: PLDDT_COLORS.confident, label: '70-90' },
-                { color: PLDDT_COLORS.low, label: '50-70' },
-                { color: PLDDT_COLORS.veryLow, label: '<50' },
-              ].map((item, i) => (
-                <div key={i} className="flex-1" title={`pLDDT ${item.label}`}>
-                  <div className="h-2 rounded-sm" style={{ backgroundColor: item.color }} />
-                </div>
-              ))}
-            </div>
-            <div className="text-[8px] text-gray-400 mt-1 text-center">pLDDT confidence</div>
           </div>
         </div>
       </div>
