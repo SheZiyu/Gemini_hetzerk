@@ -1,13 +1,18 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict, List
-import random
-import time
+import base64
+import gzip
+import os
+import sys
+import tempfile
+import uuid
+from pathlib import Path
 
 app = FastAPI()
 
-# Hackathon / demo: 先放寬 CORS
+# CORS 配置
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,152 +21,165 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class GenerateRequest(BaseModel):
-    pdb_id: str
+# 导入 AI Agent 模块
+sys.path.insert(0, str(Path(__file__).parent.parent / "ai-agents" / "gemini-molecular-ranker" / "src"))
 
-TARGET_NAMES = {
-    "6gfs": "Beta-Lactoglobulin",
-    "1iep": "Abl Kinase Domain",
-    "8aw3": "EGFR Kinase Domain",
-    "3poz": "JAK2 Kinase Domain",
-    "2hyy": "EGFR with Gefitinib",
-    "4yne": "ALK Kinase Domain",
-}
+try:
+    from agents.orchestrator import AgentOrchestrator
+    from config import GEMINI_API_KEY
+    AGENT_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: AI Agent module not available: {e}")
+    AGENT_AVAILABLE = False
 
-DRUG_NAMES = [
-    "Palmitic-DG", "Oleic-DG", "Linoleic-DG", "Stearic-DG", "Arachidonic-DG",
-    "Docosa-DG", "Myris-DG", "Lauric-DG", "Caprylic-DG", "Eicosa-DG",
-]
 
-SMILES_LIST = [
-    "CC1=C(C=C(C=C1)NC(=O)C2=CC=C(C=C2)CN3CCN(CC3)C)NC4=NC=CC(=N4)C5=CN=CC=C5",
-    "COC1=C(C=C2C(=C1)N=CN=C2NC3=CC(=C(C=C3)F)Cl)OCCCN4CCOCC4",
-    "COC1=CC2=C(C=C1OCCCN3CCOCC3)C(=NC=N2)NC4=CC(=C(C=C4)F)Cl",
-    "CC1=C(C(=O)N(C2=NC(=NC=C12)NC3=CC=C(C=C3)NC(=O)NC4=CC=CC=C4)C)C",
-]
+class AnalyzeRequest(BaseModel):
+    protein: str  # Base64 encoded gzipped protein PDB content
+    ligand: str   # Base64 encoded gzipped ligand SDF content
+    proteinName: str
+    ligandName: str
 
-def now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-def mock_plddt(num_residues: int) -> Dict[str, Any]:
-    scores: List[float] = []
-    residue_numbers: List[int] = []
-    chain_ids: List[str] = []
-    total = 0.0
+def decompress_base64(data: str) -> str:
+    """解压缩 Base64 编码的 gzip 数据"""
+    try:
+        compressed = base64.b64decode(data)
+        decompressed = gzip.decompress(compressed)
+        return decompressed.decode('utf-8')
+    except Exception as e:
+        raise ValueError(f"Failed to decompress data: {e}")
 
-    for i in range(num_residues):
-        if i < int(num_residues * 0.05) or i > int(num_residues * 0.95):
-            base = 35 + random.random() * 25
-        else:
-            base = 70 + random.random() * 25
 
-        s = max(0.0, min(100.0, base + (random.random() - 0.5) * 8))
-        scores.append(s)
-        residue_numbers.append(i + 1)
-        chain_ids.append("A")
-        total += s
+def run_agent_analysis(protein_pdb: str, ligand_sdf: str) -> Dict[str, Any]:
+    """运行 AI Agent 进行分析"""
+    if not AGENT_AVAILABLE:
+        raise RuntimeError("AI Agent module is not available")
+    
+    # 创建临时目录保存文件
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        
+        # 保存 protein 和 ligand 文件
+        protein_file = temp_path / "protein.pdb"
+        ligand_file = temp_path / "ligand.sdf"
+        
+        protein_file.write_text(protein_pdb)
+        ligand_file.write_text(ligand_sdf)
+        
+        # 初始化并运行 Agent
+        orchestrator = AgentOrchestrator(api_key=GEMINI_API_KEY)
+        
+        query = f"""
+        Perform molecular docking analysis for:
+        - Protein: {protein_file}
+        - Ligand: {ligand_file}
+        
+        Please:
+        1. Run DiffDock to generate binding poses
+        2. Score the poses using appropriate scoring functions
+        3. Validate the top poses
+        4. Provide detailed analysis and recommendations
+        """
+        
+        # 运行 Agent
+        result = orchestrator.run(query)
+        
+        # 解析 Agent 返回结果
+        return parse_agent_result(result, protein_pdb, ligand_sdf)
 
-    return {
-        "scores": scores,
-        "residueNumbers": residue_numbers,
-        "chainIds": chain_ids,
-        "averageScore": total / num_residues if num_residues else 0.0,
-    }
 
-def mock_pae(num_residues: int) -> Dict[str, Any]:
-    matrix: List[List[float]] = []
-    max_pae = 0.0
-
-    for i in range(num_residues):
-        row: List[float] = []
-        for j in range(num_residues):
-            if i == j:
-                v = 0.0
-            else:
-                dist = abs(i - j)
-                v = min(30.0, dist * 0.12 + random.random() * 2.0)
-            row.append(v)
-            if v > max_pae:
-                max_pae = v
-        matrix.append(row)
-
-    return {
-        "matrix": matrix,
-        "maxPAE": max_pae,
-        "chainBoundaries": [],
-        "numResidues": num_residues,
-    }
-
-def mock_candidates(pdb_id: str) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-
-    for i in range(10):
-        score = -10.5 + (i * 0.35) + (random.random() * 0.2 - 0.1)
-        logp = 2.5 + random.random() * 2.0
-        mw = 450 + (i * 15) + (random.random() * 30)
-        qed = 0.85 - (i * 0.03) + (random.random() * 0.05)
-
-        out.append({
-            "id": f"cand-{i+1}",
-            "name": DRUG_NAMES[i] if i < len(DRUG_NAMES) else f"DrugGen-{100+i}",
-            "rank": i + 1,
-            "score": score,
-            "smiles": SMILES_LIST[i % len(SMILES_LIST)],
-            "targetPdb": "",
-            "ligandSdf": "",
-            "admet": {
-                "molecularWeight": mw,
-                "logP": logp,
-                "qed": max(0.4, min(0.95, qed)),
-                "saScore": 2.0 + (i * 0.2) + (random.random() * 0.5),
-                "toxicity": "Low" if i < 3 else "Medium" if i < 7 else "High",
-                "hbd": int(2 + random.random() * 3),
-                "hba": int(4 + random.random() * 4),
-                "tpsa": 60 + random.random() * 80,
-                "rotBonds": int(3 + random.random() * 5),
-            },
-            "aiAnalysis": f"Mock analysis for {pdb_id.upper()} / {DRUG_NAMES[i] if i < len(DRUG_NAMES) else 'DrugGen'}",
+def parse_agent_result(agent_result: Dict[str, Any], protein_pdb: str, ligand_sdf: str) -> Dict[str, Any]:
+    """解析 Agent 返回结果并格式化为前端需要的格式"""
+    
+    # 从 Agent 结果中提取候选
+    candidates = []
+    
+    # 如果 Agent 返回了多个 poses
+    if "poses" in agent_result:
+        for i, pose in enumerate(agent_result["poses"][:5]):  # 取前5个
+            candidates.append({
+                "id": f"pose-{i+1}",
+                "name": f"Binding Pose {i+1}",
+                "rank": i + 1,
+                "score": pose.get("score", 0.0),
+                "targetPdb": pose.get("pdb_content", protein_pdb),
+                "ligandSdf": pose.get("sdf_content", ligand_sdf),
+                "aiAnalysis": pose.get("analysis", "Analysis in progress..."),
+                "admet": {
+                    "molecularWeight": pose.get("molecular_weight", 0)
+                }
+            })
+    else:
+        # 如果没有 poses，使用 final answer
+        candidates.append({
+            "id": "pose-1",
+            "name": "Binding Pose 1",
+            "rank": 1,
+            "score": 0.0,
+            "targetPdb": protein_pdb,
+            "ligandSdf": ligand_sdf,
+            "aiAnalysis": agent_result.get("final_answer", "Analysis completed."),
+            "admet": {"molecularWeight": 0}
         })
+    
+    return {
+        "targetName": "Uploaded Target Protein",
+        "candidates": candidates
+    }
 
-    return out
 
 @app.get("/health")
 def health():
-    return {"ok": True}
-
-@app.post("/api/generate")
-def generate(req: GenerateRequest):
-    pdb_id = (req.pdb_id or "").strip().lower() or "6gfs"
-
-    num_residues = 120
-    plddt = mock_plddt(num_residues)
-    pae = mock_pae(num_residues)
-
-    chains = [{
-        "chainId": "A",
-        "startIndex": 0,
-        "endIndex": num_residues,
-        "residueCount": num_residues,
-        "type": "protein",
-    }]
-
-    quality_data = {
-        "modelConfidence": {
-            "pTM": 0.70 + (plddt["averageScore"] / 100.0) * 0.25,
-            "ipTM": None,
-        },
-        "plddt": plddt,
-        "pae": pae,
-        "chains": chains,
-    }
-
     return {
-        "jobId": f"job-{int(time.time())}-{random.randint(1000,9999)}",
-        "status": "completed",
-        "targetName": TARGET_NAMES.get(pdb_id, f"Target ({pdb_id.upper()})"),
-        "targetPdbId": pdb_id.upper(),
-        "candidates": mock_candidates(pdb_id),
-        "qualityData": quality_data,
-        "paeData": pae,
-        "generatedAt": now_iso(),
+        "ok": True,
+        "agent_available": AGENT_AVAILABLE
     }
+
+
+@app.post("/api/analyze")
+async def analyze(req: AnalyzeRequest):
+    """
+    接收压缩的 protein 和 ligand 文件，解压后调用 AI Agent 进行分析
+    """
+    try:
+        # 解压缩文件
+        protein_pdb = decompress_base64(req.protein)
+        ligand_sdf = decompress_base64(req.ligand)
+        
+        print(f"Received files: {req.proteinName}, {req.ligandName}")
+        print(f"Protein PDB size: {len(protein_pdb)} bytes")
+        print(f"Ligand SDF size: {len(ligand_sdf)} bytes")
+        
+        # 调用 AI Agent 进行分析
+        if AGENT_AVAILABLE:
+            result = run_agent_analysis(protein_pdb, ligand_sdf)
+        else:
+            # 如果 Agent 不可用，返回简单的响应
+            result = {
+                "targetName": "Uploaded Target Protein",
+                "candidates": [{
+                    "id": "pose-1",
+                    "name": "Binding Pose 1",
+                    "rank": 1,
+                    "score": -8.5,
+                    "targetPdb": protein_pdb,
+                    "ligandSdf": ligand_sdf,
+                    "aiAnalysis": """**Analysis Summary**
+
+AI Agent is currently unavailable. Please ensure:
+1. AI Agent module is properly installed
+2. GEMINI_API_KEY is configured
+3. DiffDock is available at configured path
+
+This is a placeholder response.""",
+                    "admet": {"molecularWeight": 0}
+                }]
+            }
+        
+        return result
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Analysis error: {e}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
