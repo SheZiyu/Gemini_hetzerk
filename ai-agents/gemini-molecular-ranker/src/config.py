@@ -1,5 +1,6 @@
 """Configuration management for Gemini Molecular Ranker"""
 import os
+import socket
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -10,10 +11,10 @@ PROJECT_ROOT = AI_AGENT_DIR.parent.parent
 
 # Try multiple .env locations
 env_paths = [
+    PROJECT_ROOT / ".env",            # Project root (统一配置，优先)
     Path.cwd() / ".env",              # Current working directory
     AI_AGENT_DIR / ".env",            # AI agent directory
     PROJECT_ROOT / "backend" / ".env", # Backend directory
-    PROJECT_ROOT / ".env",            # Project root
 ]
 
 for env_path in env_paths:
@@ -24,13 +25,107 @@ else:
     # Fallback: just call load_dotenv() to try default behavior
     load_dotenv()
 
+
+def check_proxy_available(proxy_url: str, timeout: float = 2.0) -> bool:
+    """检查代理是否可用"""
+    if not proxy_url:
+        return False
+    try:
+        # 解析代理地址
+        proxy_url = proxy_url.replace("http://", "").replace("https://", "")
+        if ":" in proxy_url:
+            host, port = proxy_url.split(":")
+            port = int(port)
+        else:
+            return False
+
+        # 尝试连接代理端口
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+
+def setup_proxy() -> dict:
+    """设置代理，仅当代理可用时启用"""
+    http_proxy = os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
+    https_proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+
+    proxy_info = {
+        'enabled': False,
+        'http_proxy': None,
+        'https_proxy': None
+    }
+
+    # 检查代理是否可用
+    proxy_to_check = https_proxy or http_proxy
+    if proxy_to_check and check_proxy_available(proxy_to_check):
+        proxy_info['enabled'] = True
+        proxy_info['http_proxy'] = http_proxy
+        proxy_info['https_proxy'] = https_proxy
+
+        # 设置环境变量
+        if http_proxy:
+            os.environ['HTTP_PROXY'] = http_proxy
+            os.environ['http_proxy'] = http_proxy
+        if https_proxy:
+            os.environ['HTTPS_PROXY'] = https_proxy
+            os.environ['https_proxy'] = https_proxy
+
+        print(f"✅ 代理已启用: {proxy_to_check}")
+    else:
+        # 清除代理环境变量
+        for key in ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy']:
+            os.environ.pop(key, None)
+
+        if proxy_to_check:
+            print(f"⚠️  代理不可用: {proxy_to_check}")
+        else:
+            print("ℹ️  未配置代理")
+
+    return proxy_info
+
+
+# 初始化时检测代理
+PROXY_INFO = setup_proxy()
+
+
+def _resolve_diffdock_path() -> Path:
+    """解析 DiffDock 路径，支持相对路径"""
+    env_path = os.getenv("DIFFDOCK_PATH", "")
+
+    if env_path:
+        path = Path(env_path)
+        # 如果是 ~ 开头，展开用户目录
+        if str(path).startswith("~"):
+            path = path.expanduser()
+        # 如果是相对路径，相对于项目根目录
+        elif not path.is_absolute():
+            path = PROJECT_ROOT / path
+
+        if path.exists():
+            return path
+
+    # 默认: 项目内的 ai-agents/DiffDock
+    default_path = PROJECT_ROOT / "ai-agents" / "DiffDock"
+    if default_path.exists():
+        return default_path
+
+    # 兜底返回环境变量值或默认值
+    return Path(env_path) if env_path else default_path
+
+
 class Config:
     """Central configuration"""
 
     # Project paths
-    PROJECT_ROOT = Path(__file__).parent.parent
-    SRC_DIR = PROJECT_ROOT / "src"
-    DATA_DIR = PROJECT_ROOT / "data"
+    PROJECT_ROOT = PROJECT_ROOT
+    AGENT_DIR = AI_AGENT_DIR
+    SRC_DIR = AI_AGENT_DIR / "src"
+    DATA_DIR = AI_AGENT_DIR / "data"
     EXAMPLES_DIR = DATA_DIR / "examples"
     UPLOADS_DIR = DATA_DIR / "uploads"
     RESULTS_DIR = DATA_DIR / "results"
@@ -38,13 +133,13 @@ class Config:
 
     # API Keys
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    
+
     # Export for direct import
     if not GEMINI_API_KEY:
         GEMINI_API_KEY = ""
 
-    # External tool paths
-    DIFFDOCK_PATH = Path(os.getenv("DIFFDOCK_PATH", "~/projects/DiffDock")).expanduser()
+    # External tool paths (支持相对路径)
+    DIFFDOCK_PATH = _resolve_diffdock_path()
 
     # DiffDock settings
     DIFFDOCK_SAMPLES = int(os.getenv("DIFFDOCK_SAMPLES", 40))

@@ -64,23 +64,44 @@ class DiffDockWrapper:
         ]
 
         print(f"  🚀 Generating up to {self.samples} poses...")
+        print(f"  📁 Output: {output_path}")
+        print(f"  ⏳ This may take several minutes...")
+        print(f"  Command: {' '.join(cmd[:5])}...")
 
         try:
-            result = subprocess.run(
+            # 使用 Popen 实时输出日志
+            process = subprocess.Popen(
                 cmd,
                 cwd=str(self.diffdock_path),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=600
+                bufsize=1
             )
 
-            if result.returncode != 0:
-                raise RuntimeError(f"DiffDock failed: {result.stderr}")
+            # 实时打印输出
+            output_lines = []
+            for line in iter(process.stdout.readline, ''):
+                line = line.rstrip()
+                if line:
+                    output_lines.append(line)
+                    # 只打印关键信息
+                    if any(kw in line.lower() for kw in ['error', 'exception', 'download', 'loading', 'progress', 'complete', 'fail', 'success', '%']):
+                        print(f"  📋 {line}")
+
+            process.wait(timeout=600)
+
+            if process.returncode != 0:
+                print(f"  ❌ DiffDock stderr (last 10 lines):")
+                for line in output_lines[-10:]:
+                    print(f"     {line}")
+                raise RuntimeError(f"DiffDock failed with code {process.returncode}")
 
             print("  ✅ DiffDock completed")
 
         except subprocess.TimeoutExpired:
-            raise RuntimeError("DiffDock timed out")
+            process.kill()
+            raise RuntimeError("DiffDock timed out (600s)")
 
         # Parse results
         poses = self._parse_output(output_path, complex_name)

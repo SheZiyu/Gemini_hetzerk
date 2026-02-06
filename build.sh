@@ -2,6 +2,7 @@
 # DrugDiffusion - 统一构建和开发脚本
 # 整合了 setup, check, dev, build, verify 功能
 # 首次运行自动安装所有依赖
+# 统一配置文件: .env (项目根目录)
 
 set -e  # 遇到错误立即退出
 
@@ -19,6 +20,9 @@ NC='\033[0m'
 
 # 标记文件，用于检测是否已初始化
 INIT_MARKER=".initialized"
+
+# 统一配置文件路径 (项目根目录)
+ROOT_ENV_FILE="$SCRIPT_DIR/.env"
 
 # ==================== 工具函数 ====================
 
@@ -101,18 +105,27 @@ check_system_deps() {
     log_success "系统依赖检查通过"
 }
 
+# 检查 node_modules 是否完整安装
+check_node_modules() {
+    # 检查 node_modules 目录存在且包含 next
+    if [ -d "frontend/node_modules/.bin" ] && [ -f "frontend/node_modules/.bin/next" ]; then
+        return 0  # 完整
+    fi
+    return 1  # 不完整
+}
+
 # 检查是否需要初始化
 needs_init() {
     # 检查标记文件
     if [ -f "$INIT_MARKER" ]; then
-        return 1  # 不需要初始化
-    fi
-
-    # 检查关键依赖是否存在
-    if [ -d "frontend/node_modules" ]; then
-        # 创建标记文件
-        touch "$INIT_MARKER"
-        return 1  # 不需要初始化
+        # 即使有标记文件，也要验证依赖是否真正安装
+        if check_node_modules; then
+            return 1  # 不需要初始化
+        else
+            # 标记存在但依赖不完整，删除标记重新初始化
+            rm -f "$INIT_MARKER"
+            return 0  # 需要初始化
+        fi
     fi
 
     return 0  # 需要初始化
@@ -150,44 +163,82 @@ auto_init() {
     echo ""
 }
 
-# 创建环境配置文件
+# 创建环境配置文件 (统一到项目根目录 .env)
 create_env_files() {
     echo ""
-    log_info "创建环境配置文件..."
+    log_info "创建统一配置文件..."
 
-    # 后端 .env
-    if [ ! -f "backend/.env" ]; then
-        cat > backend/.env << 'EOF'
+    # 项目根目录 .env (统一配置)
+    if [ ! -f "$ROOT_ENV_FILE" ]; then
+        cat > "$ROOT_ENV_FILE" << 'EOF'
+# ==========================================
+# DrugDiffusion 统一配置文件
+# 所有模块从此文件读取配置
+# ==========================================
+
+# ========== API 密钥 ==========
 GEMINI_API_KEY=your_api_key_here
-DIFFDOCK_PATH=/path/to/DiffDock
+
+# ========== DiffDock 配置 ==========
+# 相对路径 (相对于项目根目录) 或绝对路径
+# 留空则自动使用项目内的 ai-agents/DiffDock
+DIFFDOCK_PATH=ai-agents/DiffDock
+DIFFDOCK_SAMPLES=40
+DIFFDOCK_STEPS=20
+DIFFDOCK_ACTUAL_STEPS=18
+BATCH_SIZE=10
+
+# ========== Gemini 模型配置 ==========
+GEMINI_MODEL=gemini-1.5-pro
+GEMINI_TEMPERATURE=0.1
+MAX_TOKENS=8000
+
+# ========== 处理配置 ==========
+ENABLE_CACHE=true
+SAVE_ALL_POSES=true
+MAX_POSES_TO_SCORE=10
+TOP_POSES_TO_ANALYZE=5
+
+# ========== 前端配置 ==========
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+
+# ========== 代理配置 (可选) ==========
+# HTTP_PROXY=http://127.0.0.1:7890
+# HTTPS_PROXY=http://127.0.0.1:7890
 EOF
-        log_success "创建 backend/.env"
+        log_success "创建统一配置文件: .env"
+        echo ""
+        log_warn "请编辑 .env 文件配置 GEMINI_API_KEY 和 DIFFDOCK_PATH"
     else
-        log_success "backend/.env 已存在"
+        log_success ".env 配置文件已存在"
     fi
 
-    # 前端 .env.local
+    # 创建符号链接，让各模块可以找到配置
+    # backend/.env -> ../.env
+    if [ ! -L "backend/.env" ] && [ ! -f "backend/.env" ]; then
+        ln -sf "../.env" "backend/.env"
+        log_success "创建 backend/.env 链接"
+    elif [ -f "backend/.env" ] && [ ! -L "backend/.env" ]; then
+        log_warn "backend/.env 已存在 (非链接)，建议删除后使用统一配置"
+    fi
+
+    # ai-agents/gemini-molecular-ranker/.env -> ../../.env
+    if [ ! -L "ai-agents/gemini-molecular-ranker/.env" ] && [ ! -f "ai-agents/gemini-molecular-ranker/.env" ]; then
+        ln -sf "../../.env" "ai-agents/gemini-molecular-ranker/.env"
+        log_success "创建 ai-agents/.env 链接"
+    elif [ -f "ai-agents/gemini-molecular-ranker/.env" ] && [ ! -L "ai-agents/gemini-molecular-ranker/.env" ]; then
+        log_warn "ai-agents/.env 已存在 (非链接)，建议删除后使用统一配置"
+    fi
+
+    # 前端 .env.local (Next.js 需要独立文件读取 NEXT_PUBLIC_ 变量)
     if [ ! -f "frontend/.env.local" ]; then
         cat > frontend/.env.local << 'EOF'
+# 前端配置 (从根目录 .env 同步)
 NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
 EOF
         log_success "创建 frontend/.env.local"
     else
         log_success "frontend/.env.local 已存在"
-    fi
-
-    # AI Agent .env
-    if [ ! -f "ai-agents/gemini-molecular-ranker/.env" ]; then
-        mkdir -p ai-agents/gemini-molecular-ranker
-        cat > ai-agents/gemini-molecular-ranker/.env << 'EOF'
-GEMINI_API_KEY=your_api_key_here
-DIFFDOCK_PATH=/path/to/DiffDock
-DIFFDOCK_SAMPLES=40
-GEMINI_MODEL=gemini-1.5-pro
-EOF
-        log_success "创建 ai-agents/gemini-molecular-ranker/.env"
-    else
-        log_success "ai-agents/.env 已存在"
     fi
 }
 
@@ -203,10 +254,25 @@ install_frontend_deps() {
 
     cd frontend
 
-    if [ ! -d "node_modules" ]; then
+    # 检查依赖是否完整 (检查 next 是否存在)
+    if [ ! -f "node_modules/.bin/next" ]; then
+        # 清理不完整的 node_modules
+        if [ -d "node_modules" ]; then
+            log_step "清理不完整的 node_modules..."
+            rm -rf node_modules
+        fi
+
         log_step "运行 npm install..."
         npm install --legacy-peer-deps
-        log_success "前端依赖安装完成"
+
+        # 验证安装成功
+        if [ -f "node_modules/.bin/next" ]; then
+            log_success "前端依赖安装完成"
+        else
+            log_error "前端依赖安装失败，next 命令未找到"
+            cd "$SCRIPT_DIR"
+            return 1
+        fi
     else
         log_success "前端依赖已安装"
     fi
@@ -274,18 +340,23 @@ usage() {
     echo "Usage: $0 [command]"
     echo ""
     echo "Commands:"
-    echo "  ${GREEN}dev${NC}       - 启动开发服务器 (自动安装依赖)"
-    echo "  ${GREEN}build${NC}     - 构建生产版本"
-    echo "  ${GREEN}setup${NC}     - 手动初始化环境和安装依赖"
-    echo "  ${GREEN}check${NC}     - 检查配置是否正确"
-    echo "  ${GREEN}verify${NC}    - 验证项目完整性"
-    echo "  ${GREEN}clean${NC}     - 清理构建产物和依赖"
-    echo "  ${GREEN}help${NC}      - 显示帮助信息"
+    echo -e "  ${GREEN}dev${NC}       - 启动开发服务器 (自动安装依赖)"
+    echo -e "  ${GREEN}build${NC}     - 构建生产版本"
+    echo -e "  ${GREEN}setup${NC}     - 初始化环境 (创建配置 + 安装依赖)"
+    echo -e "  ${GREEN}deps${NC}      - 仅安装依赖 (不创建配置文件)"
+    echo -e "  ${GREEN}check${NC}     - 检查配置是否正确"
+    echo -e "  ${GREEN}verify${NC}    - 验证项目完整性"
+    echo -e "  ${GREEN}clean${NC}     - 清理构建产物和依赖"
+    echo -e "  ${GREEN}help${NC}      - 显示帮助信息"
     echo ""
     echo "Examples:"
-    echo "  $0 dev      # 启动开发环境 (首次运行自动安装依赖)"
-    echo "  $0 build    # 构建生产版本"
-    echo "  $0 clean    # 清理所有依赖，重新开始"
+    echo -e "  ${GREEN}$0 dev${NC}      # 启动开发环境 (首次运行自动安装依赖)"
+    echo -e "  ${GREEN}$0 build${NC}    # 构建生产版本"
+    echo -e "  ${GREEN}$0 clean${NC}    # 清理所有依赖，重新开始"
+    echo ""
+    echo "Configuration:"
+    echo -e "  所有配置统一放在项目根目录 ${YELLOW}.env${NC} 文件中"
+    echo -e "  包括: GEMINI_API_KEY, DIFFDOCK_PATH, GEMINI_MODEL 等"
     echo ""
 }
 
@@ -319,15 +390,15 @@ cmd_setup() {
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "📝 下一步:"
-    echo "  1. 编辑 ${YELLOW}backend/.env${NC} 添加 GEMINI_API_KEY"
-    echo "  2. 编辑 ${YELLOW}backend/.env${NC} 设置 DIFFDOCK_PATH"
-    echo "  3. 将相同配置复制到 ${YELLOW}ai-agents/gemini-molecular-ranker/.env${NC}"
+    echo -e "  编辑统一配置文件 ${YELLOW}.env${NC}:"
+    echo "    - 设置 GEMINI_API_KEY"
+    echo "    - 设置 DIFFDOCK_PATH"
     echo ""
     echo "🚀 启动开发环境:"
-    echo "  ${GREEN}./build.sh dev${NC}"
+    echo -e "  ${GREEN}./build.sh dev${NC}"
     echo ""
     echo "🔍 检查配置:"
-    echo "  ${GREEN}./build.sh check${NC}"
+    echo -e "  ${GREEN}./build.sh check${NC}"
     echo ""
 }
 
@@ -374,31 +445,56 @@ cmd_check() {
         ((WARNINGS++))
     fi
 
-    # 检查配置文件
+    # 检查配置文件 (统一配置)
     echo ""
     echo "⚙️  配置文件:"
-    if [ -f "backend/.env" ]; then
-        log_success "backend/.env 存在"
+    if [ -f "$ROOT_ENV_FILE" ]; then
+        log_success ".env (统一配置) 存在"
         # 检查 API Key
-        if grep -q "GEMINI_API_KEY=" backend/.env && ! grep -q "GEMINI_API_KEY=your_api_key_here" backend/.env; then
+        if grep -q "GEMINI_API_KEY=" "$ROOT_ENV_FILE" && ! grep -q "GEMINI_API_KEY=your_api_key_here" "$ROOT_ENV_FILE"; then
             log_success "  GEMINI_API_KEY 已配置"
         else
             log_warn "  GEMINI_API_KEY 未设置"
             ((WARNINGS++))
         fi
         # 检查 DiffDock 路径
-        if grep -q "DIFFDOCK_PATH=" backend/.env; then
-            DIFFDOCK_PATH=$(grep "DIFFDOCK_PATH=" backend/.env | cut -d'=' -f2)
-            if [ -d "$DIFFDOCK_PATH" ] && [ "$DIFFDOCK_PATH" != "/path/to/DiffDock" ]; then
-                log_success "  DIFFDOCK_PATH 有效: $DIFFDOCK_PATH"
+        if grep -q "DIFFDOCK_PATH=" "$ROOT_ENV_FILE"; then
+            DIFFDOCK_PATH=$(grep "^DIFFDOCK_PATH=" "$ROOT_ENV_FILE" | cut -d'=' -f2)
+            # 处理路径
+            if [ -n "$DIFFDOCK_PATH" ]; then
+                # 处理 ~ 开头的路径
+                if [[ "$DIFFDOCK_PATH" == ~* ]]; then
+                    DIFFDOCK_PATH="${DIFFDOCK_PATH/#\~/$HOME}"
+                # 处理相对路径 (不以 / 开头)
+                elif [[ "$DIFFDOCK_PATH" != /* ]]; then
+                    DIFFDOCK_PATH="$SCRIPT_DIR/$DIFFDOCK_PATH"
+                fi
+                if [ -d "$DIFFDOCK_PATH" ]; then
+                    log_success "  DIFFDOCK_PATH 有效: $DIFFDOCK_PATH"
+                else
+                    log_warn "  DIFFDOCK_PATH 目录不存在: $DIFFDOCK_PATH"
+                    ((WARNINGS++))
+                fi
             else
-                log_warn "  DIFFDOCK_PATH 无效或未设置"
-                ((WARNINGS++))
+                # 空值，检查默认位置
+                if [ -d "$SCRIPT_DIR/ai-agents/DiffDock" ]; then
+                    log_success "  DIFFDOCK_PATH 使用默认: ai-agents/DiffDock"
+                else
+                    log_warn "  DIFFDOCK_PATH 未设置且默认目录不存在"
+                    ((WARNINGS++))
+                fi
             fi
         fi
     else
-        log_warn "backend/.env 不存在"
+        log_warn ".env 配置文件不存在 (运行 ./build.sh setup 创建)"
         ((WARNINGS++))
+    fi
+
+    # 检查子模块配置链接
+    if [ -L "backend/.env" ]; then
+        log_success "backend/.env -> 链接到统一配置"
+    elif [ -f "backend/.env" ]; then
+        log_warn "backend/.env 是独立文件 (建议使用统一配置)"
     fi
 
     if [ -f "frontend/.env.local" ]; then
@@ -408,11 +504,10 @@ cmd_check() {
         ((WARNINGS++))
     fi
 
-    if [ -f "ai-agents/gemini-molecular-ranker/.env" ]; then
-        log_success "ai-agents/.env 存在"
-    else
-        log_warn "ai-agents/.env 不存在"
-        ((WARNINGS++))
+    if [ -L "ai-agents/gemini-molecular-ranker/.env" ]; then
+        log_success "ai-agents/.env -> 链接到统一配置"
+    elif [ -f "ai-agents/gemini-molecular-ranker/.env" ]; then
+        log_warn "ai-agents/.env 是独立文件 (建议使用统一配置)"
     fi
 
     # 结果汇总
@@ -421,7 +516,7 @@ cmd_check() {
     if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
         echo -e "${GREEN}✅ 所有检查通过！${NC}"
         echo ""
-        echo "启动开发环境: ${GREEN}./build.sh dev${NC}"
+        echo -e "启动开发环境: ${GREEN}./build.sh dev${NC}"
     elif [ $ERRORS -eq 0 ]; then
         echo -e "${YELLOW}⚠️  发现 $WARNINGS 个警告${NC}"
         echo ""
@@ -445,6 +540,12 @@ cmd_dev() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
+    # 检查配置文件
+    if [ ! -f "$ROOT_ENV_FILE" ]; then
+        log_warn "配置文件不存在，将创建默认配置..."
+        create_env_files
+    fi
+
     # 清理可能存在的旧进程
     cleanup_processes
 
@@ -459,10 +560,10 @@ cmd_dev() {
     # 等待后端启动
     sleep 2
 
-    # 启动前端
+    # 启动前端 (使用 npx 确保正确找到 next 命令)
     log_info "启动前端服务 (Port 3000)..."
     cd frontend
-    npm run dev &
+    npx next dev --port 3000 &
     FRONTEND_PID=$!
     cd "$SCRIPT_DIR"
     log_success "前端已启动 (PID: $FRONTEND_PID)"
@@ -524,7 +625,7 @@ cmd_build() {
     # 构建前端
     log_info "构建前端..."
     cd frontend
-    npm run build
+    npx next build
     if [ $? -eq 0 ]; then
         log_success "前端构建成功"
         mkdir -p "../$BUILD_DIR/frontend"
@@ -587,11 +688,11 @@ EOF
     echo -e "${GREEN}✅ 构建完成！${NC}"
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo "构建目录: ${BLUE}$BUILD_DIR/${NC}"
+    echo -e "构建目录: ${BLUE}$BUILD_DIR/${NC}"
     echo ""
     echo "部署步骤:"
-    echo "  ${GREEN}cd $BUILD_DIR${NC}"
-    echo "  ${GREEN}./start.sh${NC}"
+    echo -e "  ${GREEN}cd $BUILD_DIR${NC}"
+    echo -e "  ${GREEN}./start.sh${NC}"
     echo ""
 }
 
@@ -614,10 +715,15 @@ cmd_clean() {
     rm -f "$INIT_MARKER"
     log_success "初始化标记已清理"
 
+    log_info "清理配置链接..."
+    rm -f backend/.env 2>/dev/null || true
+    rm -f ai-agents/gemini-molecular-ranker/.env 2>/dev/null || true
+    log_success "配置链接已清理 (保留根目录 .env)"
+
     echo ""
     echo -e "${GREEN}✅ 清理完成！${NC}"
     echo ""
-    echo "重新安装依赖: ${GREEN}./build.sh setup${NC}"
+    echo -e "重新安装依赖: ${GREEN}./build.sh setup${NC}"
     echo ""
 }
 
@@ -686,7 +792,7 @@ cmd_verify() {
 
     echo ""
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo "📊 结果: ${GREEN}$PASS 通过${NC}, ${RED}$FAIL 失败${NC}"
+    echo -e "📊 结果: ${GREEN}$PASS 通过${NC}, ${RED}$FAIL 失败${NC}"
 
     if [ $FAIL -eq 0 ]; then
         echo -e "${GREEN}✅ 项目完整性验证通过！${NC}"
@@ -694,6 +800,32 @@ cmd_verify() {
         echo -e "${YELLOW}⚠️  发现 $FAIL 个问题${NC}"
     fi
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# ==================== DEPS (单独安装依赖) ====================
+cmd_deps() {
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}📦 安装所有依赖${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # 检查系统依赖
+    check_system_deps
+
+    # 安装前端依赖
+    install_frontend_deps
+
+    # 安装后端依赖
+    install_backend_deps
+
+    # 安装 AI Agent 依赖
+    install_agent_deps
+
+    # 创建标记文件
+    touch "$INIT_MARKER"
+
+    echo ""
+    echo -e "${GREEN}✅ 所有依赖安装完成！${NC}"
+    echo ""
 }
 
 # ==================== MAIN ====================
@@ -706,6 +838,9 @@ case "${1:-}" in
         ;;
     setup)
         cmd_setup
+        ;;
+    deps)
+        cmd_deps
         ;;
     check)
         cmd_check

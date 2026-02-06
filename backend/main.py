@@ -8,22 +8,55 @@ import sys
 import tempfile
 from pathlib import Path
 import os
+import socket
 
 # 🔧 关键修复：在所有导入之前先加载 .env 文件
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
-# 确保代理环境变量被设置
-http_proxy = os.getenv('HTTP_PROXY')
-https_proxy = os.getenv('HTTPS_PROXY')
-if http_proxy or https_proxy:
-    print(f"🌐 Backend proxy configuration:")
+
+def check_proxy_available(proxy_url: str, timeout: float = 2.0) -> bool:
+    """检查代理是否可用"""
+    if not proxy_url:
+        return False
+    try:
+        proxy_url = proxy_url.replace("http://", "").replace("https://", "")
+        if ":" in proxy_url:
+            host, port = proxy_url.split(":")
+            port = int(port)
+        else:
+            return False
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+
+# 检测并配置代理
+http_proxy = os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
+https_proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+proxy_to_check = https_proxy or http_proxy
+
+if proxy_to_check and check_proxy_available(proxy_to_check):
+    # 代理可用，设置环境变量
     if http_proxy:
-        print(f"   HTTP_PROXY: {http_proxy}")
+        os.environ['HTTP_PROXY'] = http_proxy
+        os.environ['http_proxy'] = http_proxy
     if https_proxy:
-        print(f"   HTTPS_PROXY: {https_proxy}")
+        os.environ['HTTPS_PROXY'] = https_proxy
+        os.environ['https_proxy'] = https_proxy
+    print(f"✅ 代理已启用: {proxy_to_check}")
 else:
-    print("⚠️  Warning: No proxy configured in backend/.env")
+    # 代理不可用，清除环境变量
+    for key in ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy']:
+        os.environ.pop(key, None)
+    if proxy_to_check:
+        print(f"⚠️  代理不可用: {proxy_to_check}")
+    else:
+        print("ℹ️  未配置代理")
 
 app = FastAPI()
 
